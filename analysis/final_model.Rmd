@@ -1,0 +1,111 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# DATA
+## HISTORICAL
+### TURNOUT
+```{r}
+historical_turnout <- read_csv("../data/processed/historical_midterm_turnout.csv")
+```
+### DEMOGRAPHICS
+```{r}
+historical_demographics <- read_csv("../data/processed/historical_demographics.csv")
+```
+
+
+
+### COMBINE
+```{r}
+historical_data <- historical_turnout |>
+  left_join(historical_demographics, join_by(year, county)) |>
+  filter(party == "ALL")
+
+remove(historical_turnout, historical_demographics)
+```
+
+## 2026
+### ELIGIBLE
+```{r}
+eligible_voters_2026 <- read_csv("../data/processed/2026_eligible_voters.csv")
+```
+
+### EARLY
+```{r}
+early_voting_2026 <- read_csv("../data/processed/2026_early_voting.csv")
+```
+
+### DEMOGRAPHICS
+```{r}
+demographics_2026 <- read_csv("../data/processed/2026_demographics.csv")
+```
+
+### COMBINE
+```{r}
+data_2026 <- eligible_voters_2026 |>
+  left_join(early_voting_2026, join_by(year, county, eligible_voters)) |>
+  left_join(demographics_2026, join_by(year, county)) |>
+  filter(party == "ALL")
+
+remove(eligible_voters_2026, early_voting_2026, demographics_2026)
+```
+
+
+# FINAL MODEL
+
+```{r}
+final_fit <- glm(
+  cbind(turnout, eligible_voters - turnout) ~ pct_black + pct_early + median_household_income,
+  family = quasibinomial, 
+  data = historical_data
+)
+summary(final_fit)
+```
+
+## PREDICTED
+
+```{r}
+predicted <- data_2026 |>
+  mutate(
+    predicted_pct_turnout = predict(final_fit, newdata = data_2026, type = "response"),
+    predicted_turnout   = predicted_pct_turnout * eligible_voters,
+    prior_midterm_pct_turnout = historical_data$pct_turnout[historical_data$year == 2022]
+  ) |>
+  select(year, county, eligible_voters, predicted_turnout, predicted_pct_turnout, prior_midterm_pct_turnout)
+```
+
+
+## BACKTEST
+```{r}
+f <- cbind(turnout, eligible_voters - turnout) ~ pct_black + pct_early + median_household_income
+
+backtest <- map(c("2010", "2014", "2018", "2022"), \(h) {
+  fit <- glm(f, family = quasibinomial, weights = eligible_voters,
+             data = filter(historical_data, year != h))
+  filter(historical_data, year == h) |>
+    mutate(predicted = predict(fit, pick(everything()), type = "response"))
+}) |>
+  list_rbind() |>
+  select(year, county, pct_turnout, predicted) |>
+  mutate(miss = predicted - pct_turnout)
+
+q <- quantile(backtest$pct_turnout - backtest$predicted, c(0.05, 0.95))
+```
+
+## CONFIDENCE
+```{r}
+predicted <- predicted |>
+  mutate(lo_pct = predicted_pct_turnout + q[1],
+         hi_pct = predicted_pct_turnout + q[2],
+         lo = lo_pct * eligible_voters,
+         hi = hi_pct * eligible_voters) |>
+  select(year, county, eligible_voters, predicted_turnout, predicted_pct_turnout, lo, lo_pct, hi, hi_pct, prior_midterm_pct_turnout) |>
+  mutate(across(c(predicted_pct_turnout, lo_pct, hi_pct, prior_midterm_pct_turnout), ~ round(.x * 100, 1)),
+         across(c(predicted_turnout, lo, hi), ~ round(.x, 0)))
+
+predicted |> summarise(statewide = sum(predicted_turnout) / sum(eligible_voters))
+
+write_csv(predicted, "../data/processed/2026_predicted_turnout.csv")
+```
+

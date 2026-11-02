@@ -1,0 +1,452 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(janitor)
+library(readxl)
+library(lubridate)
+library(corrplot)
+library(tigris)
+options(tigris_use_cache = TRUE)
+```
+
+# VOTER FILES
+```{r}
+# unzip("../data/voter_files/voter_files.zip", exdir = "../data/voter_files/raw")
+# 
+# voter_files <- list.files("../data/voter_files/raw", pattern = "\\.txt$", full.names = TRUE)
+# 
+# first <- read_delim(voter_files[1], delim = "\t", quote = "",
+#                     col_types = cols(.default = "c"))
+# 
+# rest <- map_dfr(voter_files[-1], ~ read_delim(.x, delim = "\t",
+#                                     quote = "",
+#                                     col_names = names(first),
+#                                     col_types = cols(.default = "c")))
+# 
+# voter_files <- bind_rows(first, rest) |>
+#   clean_names() |>
+#   select(vtr_id, first_name, middle_name, last_name, suffix, status_code, party, gender, birth_date, county_registration_date, state_registration_date, house_number, house_suffix, street_pre_direction, street_name, street_type, street_post_direction, unit_type, unit_number, non_standard_address, residential_city, residential_state, residential_zip, residential_zip_plus, county, congressional, legislative, councilmanic, commissioner, ward, municipal, school, precinct, split, mailingaddress, mailingcity, mailingstate, mailingzip, mailingzipplus, x07_19_2022_gp, x11_08_2022_gg, x05_14_2024_pp, x11_05_2024_pg, x06_23_2026_gp) |>
+#   rename(
+#     primary_2022 = x07_19_2022_gp,
+#     general_2022 = x11_08_2022_gg,
+#     primary_2024 = x05_14_2024_pp,
+#     general_2024 = x11_05_2024_pg,
+#     primary_2026 = x06_23_2026_gp
+#   )
+# 
+# remove(first, rest)
+# 
+# write_csv(voter_files, "../data/voter_files/voter_files_combined.csv")
+
+voter_files <- read_csv("../data/voter_files/voter_files_combined.csv") 
+```
+
+```{r}
+voter_files <- voter_files |>
+  distinct() |>
+  select(-c(mailingaddress, mailingcity, mailingstate, mailingzip, mailingzipplus)) |>
+  mutate(across(c(primary_2022, general_2022, primary_2024, general_2024, primary_2026), ~ ifelse(!is.na(.x), TRUE, FALSE)))
+```
+
+
+# TURNOUT
+```{r}
+turnout_files <- list.files("../data/turnout/", pattern = "\\.xlsx?$")
+
+turnout <- map_dfr(turnout_files, ~ read_excel(paste0("../data/turnout/", .x), col_types = "text")) |>
+  clean_names() |>
+  select(year, election, party, county, eligible_voters, polls, early, provisional, absentee) |>
+  mutate(year = as.character(year),
+         eligible_voters = as.numeric(eligible_voters),
+         polls = as.numeric(polls),
+         pct_polls = polls / eligible_voters,
+         early = as.numeric(early),
+         pct_early = early / eligible_voters,
+         provisional = as.numeric(provisional),
+         pct_provisional = provisional / eligible_voters,
+         absentee = as.numeric(absentee),
+         pct_absentee = absentee / eligible_voters,
+         turnout = (polls + early + provisional + absentee),
+         pct_turnout = turnout / eligible_voters) |>
+  select(year, election, party, county, eligible_voters, turnout, pct_turnout, polls, pct_polls, early, pct_early, provisional, pct_provisional, absentee, pct_absentee)
+```
+
+```{r}
+general <- turnout |>
+  filter(election == "GENERAL", county != "TOTAL") |>
+  mutate(pct_turnout = as.numeric(pct_turnout)) |>
+  arrange(county, year) |>
+  group_by(county) |>
+  mutate(prior_midterm_turnout = lag(pct_turnout)) |>
+  ungroup()
+
+primary_statewide_turnout <- turnout |>
+  filter(election == "PRIMARY", party == "ALL", county != "TOTAL") 
+
+write_csv(general |>
+            select(year, election, party, county, eligible_voters, turnout, pct_turnout, early, pct_early, prior_midterm_turnout), "../data/processed/historical_midterm_turnout.csv")
+```
+
+
+# ABSENTEE SENT
+```{r}
+absentee_sent_2026 <- read_csv("../data/absentee_sent/absentee_sent_2026.csv") |>
+  clean_names() |>
+  select(year, county = county_name, absentee_sent = total_sent)
+
+absentee_sent_2022 <- read_csv("../data/absentee_sent/absentee_sent_2022.csv") |>
+  clean_names() |>
+  select(year, county = county_name, absentee_sent = total_sent)
+
+absentee_sent_2018 <- read_csv("../data/absentee_sent/absentee_sent_2018.csv") |>
+  clean_names() |>
+  select(year, county = county_name, absentee_sent = total_sent)
+
+absentee_sent_2014 <- read_csv("../data/absentee_sent/absentee_sent_2014.csv") |>
+  clean_names() |>
+  select(year, county = county_name, absentee_sent = total_sent)
+
+absentee_sent_2010 <- read_csv("../data/absentee_sent/absentee_sent_2010.csv") |>
+  clean_names() |>
+  select(year, county = county_name, absentee_sent = total_sent)
+
+absentee_sent <- bind_rows(absentee_sent_2010, absentee_sent_2014, absentee_sent_2018, absentee_sent_2022, absentee_sent_2026) |>
+  mutate(year = as.character(year))
+
+remove(absentee_sent_2010, absentee_sent_2014, absentee_sent_2018, absentee_sent_2022, absentee_sent_2026)
+```
+
+# DEMOGRAPHICS
+```{r}
+age_65_up  <- sprintf("B01001_%03d", c(20:25, 44:49))
+
+vars <- c(
+  total_pop        = "B01003_001",
+  median_age       = "B01002_001",
+  white_nh         = "B03002_003",
+  black_nh         = "B03002_004",
+  asian_nh         = "B03002_006",
+  hispanic         = "B03002_012",
+  race_total       = "B03002_001",
+  median_hh_income = "B19013_001",
+  edu_total        = "B15002_001",
+  bach_m = "B15002_015", 
+  masters_m = "B15002_016", 
+  prof_m = "B15002_017", 
+  doc_m = "B15002_018",
+  bach_f = "B15002_032", 
+  masters_f = "B15002_033", 
+  prof_f = "B15002_034", 
+  doc_f = "B15002_035",
+  civ_labor_force  = "B23025_003",
+  unemployed       = "B23025_005",
+  setNames(age_65_up,  paste0("age65up_", seq_along(age_65_up)))
+)
+
+years <- c(2011, 2014, 2018, 2022, 2024)
+
+demographics <- map(years, \(y) {
+  get_acs(
+    geography = "county",
+    state     = "MD",
+    variables = vars,
+    year      = y,
+    survey    = "acs5"
+  ) |>
+    mutate(year = ifelse(y == 2011, 2010, ifelse(y == 2024, 2026, y)))
+}) |>
+  list_rbind() |>
+  clean_names() |>
+  pivot_wider(
+    id_cols     = c(geoid, name, year),
+    names_from  = variable,
+    values_from = c(estimate, moe)
+  ) |>
+  mutate(
+    pct_white = estimate_white_nh / estimate_race_total,
+    pct_black = estimate_black_nh / estimate_race_total,
+    pct_hispanic = estimate_hispanic / estimate_race_total,
+    pct_bachelors_higher = rowSums(pick(estimate_bach_m:estimate_doc_f)) / estimate_edu_total,
+    pct_unemployed = estimate_unemployed / estimate_civ_labor_force,
+    pct_65_up  = rowSums(pick(starts_with("estimate_age65up_")))   / estimate_total_pop,
+    county = ifelse(name == "Baltimore city, Maryland", "Baltimore City", 
+             ifelse(name == "Baltimore County, Maryland", "Baltimore County", 
+             ifelse(name == "St. Mary's County, Maryland", "Saint Mary's", 
+             str_remove(name, " County, Maryland")))),
+    year = as.character(year)
+    ) |>
+  select(county, year, population = estimate_total_pop, pct_white, pct_black, pct_hispanic,
+         median_age = estimate_median_age, pct_65_up, pct_bachelors_higher,
+         pct_unemployed, median_household_income = estimate_median_hh_income)
+
+
+write_csv(demographics |>
+            select(county, year, pct_black, median_household_income) |>
+            filter(year %in% c(2010, 2014, 2018, 2022)), "../data/historical/historical_demographics.csv")
+
+write_csv(demographics |>
+            select(county, year, pct_black, median_household_income) |>
+            filter(year == 2026), "../data/processed/2026/2026_demographics.csv")
+```
+
+# POLLS
+```{r}
+generic_ballot <- read_csv("../data/polls/midterm_generic_ballot_averages.csv") |>
+  mutate(year = as.character(year))
+```
+
+```{r}
+presidential_approval <- read_csv("../data/polls/presidential_approval.csv") |>
+  mutate(year = as.character(year))
+```
+
+# POLLING PLACES
+## 2010
+
+```{r}
+polling_places_2010 <- read_csv("../data/polling_places/2010_polling_places.csv") |>
+  separate(col = "County Precincts Polling_Places", into = c("county", "data"), sep = "ty ") |>
+  separate(col = "data", into = c("precincts","polling_places"), sep = " ") |>
+  mutate(county = ifelse(county == "Baltimore Ci", "Baltimore City", 
+                  ifelse(county == "Baltimore Coun", "Baltimore County",
+                  ifelse(county == "St. Mary's Coun", "Saint Mary's",
+                  str_remove(county, " Coun"))))) |>
+  mutate(year = "2010",
+         precincts = as.numeric(precincts),
+         polling_places = as.numeric(polling_places),
+         polling_places_per_precinct = polling_places / precincts) |>
+  select(year, county, precincts, polling_places, polling_places_per_precinct)
+```
+## 2014
+
+```{r}
+polling_places_2014 <- read_csv("../data/polling_places/2014_polling_places.csv") |>
+  separate(col = "County Precincts Ghost_Precincts Total_No_Ghosts Polling_Places", into = c("county", "data"), sep = "ty ") |>
+  separate(col = "data", into = c("precincts", "ghost_precincts", "total_no_ghosts", "polling_places"), sep = " ") |>
+  mutate(county = ifelse(county == "Baltimore Ci", "Baltimore City", 
+                  ifelse(county == "Baltimore Coun", "Baltimore County",
+                  ifelse(county == "St. Mary's Coun", "Saint Mary's",
+                  str_remove(county, " Coun"))))) |>
+  mutate(year = "2014",
+         precincts = as.numeric(total_no_ghosts),
+         polling_places = as.numeric(polling_places),
+         polling_places_per_precinct = polling_places / precincts) |>
+  select(year, county, precincts, polling_places, polling_places_per_precinct) 
+```
+
+
+## 2018 
+
+```{r}
+polling_places_2018 <- read_csv("../data/polling_places/2018_polling_places.csv") |>
+  separate(col = "County Precincts Ghost_Precincts Total_No_Ghosts Polling_Places", into = c("county", "data"), sep = "ty ") |>
+  separate(col = "data", into = c("precincts", "ghost_precincts", "total_no_ghosts", "polling_places"), sep = " ") |>
+  mutate(county = ifelse(county == "Baltimore Ci", "Baltimore City", 
+                  ifelse(county == "Baltimore Coun", "Baltimore County",
+                  ifelse(county == "St. Mary's Coun", "Saint Mary's",
+                  str_remove(county, " Coun"))))) |>
+  mutate(year = "2018",
+         precincts = as.numeric(total_no_ghosts),
+         polling_places = as.numeric(polling_places),
+         polling_places_per_precinct = polling_places / precincts) |>
+  select(year, county, precincts, polling_places, polling_places_per_precinct) 
+```
+
+## 2022
+```{r}
+polling_places_2022 <- read_csv("../data/polling_places/2022_polling_places.csv") |>
+  separate(col = "County Precincts Ghost_Precincts Total_No_Ghosts Polling_Places", into = c("county", "data"), sep = "ty ") |>
+  separate(col = "data", into = c("precincts", "ghost_precincts", "total_no_ghosts", "polling_places"), sep = " ") |>
+  mutate(county = ifelse(county == "Baltimore Ci", "Baltimore City", 
+                  ifelse(county == "Baltimore Coun", "Baltimore County",
+                  str_remove(county, " Coun")))) |>
+  mutate(year = "2022",
+         precincts = as.numeric(total_no_ghosts),
+         polling_places = as.numeric(polling_places),
+         polling_places_per_precinct = polling_places / precincts) |>
+  select(year, county, precincts, polling_places, polling_places_per_precinct) 
+```
+## 2026
+```{r}
+polling_places_2026 <- read_csv("../data/polling_places/2026_polling_places.csv") |>
+  separate(col = "County Precincts Ghost_Precincts Total_No_Ghosts Polling_Places", into = c("county", "data"), sep = "ty ") |>
+  separate(col = "data", into = c("precincts", "ghost_precincts", "total_no_ghosts", "polling_places"), sep = " ") |>
+  mutate(county = ifelse(county == "Baltimore Ci", "Baltimore City", 
+                  ifelse(county == "Baltimore Coun", "Baltimore County",
+                  str_remove(county, " Coun")))) |>
+  mutate(year = "2026",
+         precincts = as.numeric(total_no_ghosts),
+         polling_places = as.numeric(polling_places),
+         polling_places_per_precinct = polling_places / precincts) |>
+  select(year, county, precincts, polling_places, polling_places_per_precinct) 
+```
+
+## COMBINE
+```{r}
+polling_places <- bind_rows(polling_places_2010, polling_places_2014, polling_places_2018, polling_places_2022, polling_places_2026) |>
+  left_join(md_area, by = "county") |>
+  select(year, county, polling_places_per_precinct) 
+
+remove(polling_places_2010, polling_places_2014, polling_places_2018, polling_places_2022, polling_places_2026)
+```
+
+
+# ANALYSIS
+## MODELING
+
+```{r}
+general <- turnout |>
+  filter(election == "GENERAL", party == "ALL", county != "TOTAL") |>
+  mutate(pct_turnout = as.numeric(pct_turnout)) |>
+  arrange(county, year) |>
+  group_by(county) |>
+  mutate(prior_midterm_turnout = lag(pct_turnout)) |>
+  ungroup()
+
+model_data <- general |>
+  left_join(demographics, join_by(year, county)) |>
+  left_join(polling_places, join_by(year, county)) |>
+  left_join(presidential_approval, join_by(year)) |>
+  left_join(generic_ballot, join_by(year)) |>
+  filter(!is.na(prior_midterm_turnout))
+```
+
+
+```{r}
+candidates <- list(
+  base = pct_turnout ~ prior_midterm_turnout,
+  early = pct_turnout ~ pct_early,
+  black = pct_turnout ~ pct_black,
+  income = pct_turnout ~ median_household_income,
+  early_black = pct_turnout ~ pct_early + pct_black,
+  base_early_black = pct_turnout ~ prior_midterm_turnout + pct_early + pct_black,
+  early_black_income = pct_turnout ~ pct_early + pct_black + median_household_income,
+  base_early_black_income = pct_turnout ~ prior_midterm_turnout + pct_early + pct_black + median_household_income
+)
+  
+  
+backtest <- function(f, hold = "2014") {
+  fit  <- glm(f, family = quasibinomial, weights = eligible_voters,
+              data = filter(model_data, year != hold))
+  test <- filter(model_data, year == hold)
+  mean(abs(predict(fit, test, type = "response") - test$pct_turnout)) * 100
+}
+
+map_dbl(candidates, backtest) 
+
+finalists <- candidates[c("base", "base_early", "base_black", "base_primary", "base_early_black", "base_early_primary", "base_black_primary", "base_early_black_primary")]
+
+holdouts <- c("2014", "2018", "2022")
+map_dbl(candidates, \(f) mean(map_dbl(holdouts, \(h) backtest(f, h)))) |> sort()
+```
+
+```{r}
+f <- candidates$early_black_income
+
+map(holdouts, \(h) {
+  fit  <- glm(f, family = quasibinomial, weights = eligible_voters, # your weight column
+              data = filter(model_data, year != h))
+  filter(model_data, year == h) |>
+    mutate(err = predict(fit, pick(everything()), type = "response") - pct_turnout) |>
+    summarise(hold = h,
+              total_error    = mean(abs(err)) * 100,
+              statewide_bias = mean(err) * 100,
+              county_error   = mean(abs(err - mean(err))) * 100)
+}) |> list_rbind()
+```
+
+```{r}
+fit <- glm(f, family = quasibinomial, weights = eligible_voters,
+           data = filter(model_data, year != "2022"))
+
+filter(model_data, year == "2022") |>
+  mutate(predicted = predict(fit, pick(everything()), type = "response")) |>
+  select(county, pct_turnout, predicted) |>
+  mutate(miss = predicted - pct_turnout) |>
+  arrange(desc(abs(miss)))
+```
+
+```{r}
+side_by_side <- map(c("2014", "2018", "2022"), \(h) {
+  fit <- glm(f, family = quasibinomial, weights = eligible_voters,
+             data = filter(model_data, year != h))
+  filter(model_data, year == h) |>
+    mutate(predicted = predict(fit, pick(everything()), type = "response"))
+}) |>
+  list_rbind() |>
+  select(year, county, pct_turnout, predicted) |>
+  mutate(miss = predicted - pct_turnout)
+
+ggplot(side_by_side, aes(pct_turnout, predicted, label = county)) +
+  geom_abline(linetype = "dashed") +
+  geom_point() +
+  facet_wrap(~ year) +
+  coord_equal()
+```
+
+# FINAL MODEL
+
+```{r}
+historical <- model_data |>
+  select(year, county, eligible_voters, turnout, pct_turnout, pct_early, pct_black, median_household_income)
+
+final_fit <- glm(
+  cbind(turnout, eligible_voters - turnout) ~ pct_black + pct_early + median_household_income,
+  family = quasibinomial, 
+  data = historical
+)
+summary(final_fit)
+```
+
+## 2026
+```{r}
+eligible_voters_2026 <- read_csv("../data/2026/2026_eligible_voters.csv") |>
+  separate(col = "DEM REP GRN OTH UNA WCP TOTAL", into = c("DEMOCRATIC", "REPUBLICAN", "GREEN", "OTHER", "UNAFFILIATED", "WORKING CLASS PARTY", "ALL"), sep = " ") |>
+  pivot_longer(cols = c(DEMOCRATIC, REPUBLICAN, GREEN, OTHER, UNAFFILIATED, "WORKING CLASS PARTY", ALL), names_to = "party", values_to = "eligible_voters")  |>
+  mutate(year = "2026",
+         election = "GENERAL",
+         eligible_voters = str_remove_all(eligible_voters, ","),
+         eligible_voters = as.numeric(eligible_voters)) |>
+  select(year, election, party, county, eligible_voters)
+
+early_voting_2026 <- read_csv("../data/2026/2026_early_voting.csv") |>
+  separate(col = "DAY1 %Day1 DAY2 %Day2 DAY3 %Day3 DAY4 %Day4 DAY5 %Day5 DAY6 %Day6 DAY7 %Day7 DAY8 %Day8 TOTAL %Total Eligible_Actives", into = c("day1", "pct_day1", "day2", "pct_day2", "day3", "pct_day3", "day4", "pct_day4", "day5", "pct_day5", "day6", "pct_day6", "day7", "pct_day7", "day8", "pct_day8", "early", "pct_total", "eligible_voters"), sep = " ") |>
+  mutate(year = "2026") |>
+  select(year, county, early, eligible_voters) |>
+  mutate(across(c(early, eligible_voters), str_remove_all, ","),
+         across(c(early, eligible_voters), as.numeric),
+         pct_early = early / eligible_voters)
+
+write_csv(eligible_voters_2026, "../data/processed/2026_eligible_voters.csv")
+write_csv(early_voting_2026, "../data/processed/2026_early_voting.csv")
+```
+
+```{r}
+data_2026 <- eligible_voters_2026 |>
+  filter(party == "ALL") |>
+  left_join(early_voting_2026, join_by(year, county, eligible_voters)) |>
+  left_join(demographics |> filter(year == "2026"), join_by(year, county)) |>
+  select(year, county, eligible_voters, pct_early, pct_black, median_household_income)
+```
+
+```{r}
+data_2026 <- data_2026 |>
+  mutate(
+    predicted_pct_turnout = predict(final_fit, newdata = data_2026, type = "response"),
+    predicted_turnout   = predicted_pct_turnout * eligible_voters
+  )
+
+q <- quantile(side_by_side$pct_turnout - side_by_side$predicted, c(0.05, 0.95))
+
+data_2026 <- data_2026 |>
+  mutate(lo = predicted_pct_turnout + q[1], hi = predicted_pct_turnout + q[2])
+
+data_2026 |> summarise(statewide = sum(predicted_turnout) / sum(eligible_voters))
+```
+
+
