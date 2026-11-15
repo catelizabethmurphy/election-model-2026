@@ -2,6 +2,16 @@
 title: "R Notebook"
 output: html_notebook
 ---
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(janitor)
+library(readxl)
+library(lubridate)
+library(corrplot)
+library(tigris)
+options(tigris_use_cache = TRUE)
+```
 
 # DATA
 ## HISTORICAL
@@ -104,7 +114,11 @@ predicted <- predicted |>
   mutate(across(c(predicted_pct_turnout, lo_pct, hi_pct, prior_midterm_pct_turnout), ~ round(.x * 100, 1)),
          across(c(predicted_turnout, lo, hi), ~ round(.x, 0)))
 
-predicted |> summarise(statewide = sum(predicted_turnout) / sum(eligible_voters))
+predicted |>
+  summarise(statewide_pct = sum(predicted_turnout) / sum(eligible_voters) * 100,
+            statewide_estimate = sum(predicted_turnout),
+            statewide_lo = sum(lo),
+            statewide_hi = sum(hi))
 
 write_csv(predicted, "../data/processed/2026_predicted_turnout.csv")
 ```
