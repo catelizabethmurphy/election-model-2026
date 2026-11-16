@@ -115,9 +115,12 @@ predicted <- predicted |>
          across(c(predicted_turnout, lo, hi), ~ round(.x, 0)))
 
 predicted |>
-  summarise(statewide_pct = sum(predicted_turnout) / sum(eligible_voters) * 100,
+  summarise(eligible_voters = sum(eligible_voters),
+            statewide_pct = sum(predicted_turnout) / sum(eligible_voters) * 100,
             statewide_estimate = sum(predicted_turnout),
+            statewide_pct_lo = sum(lo) / sum(eligible_voters) * 100,
             statewide_lo = sum(lo),
+            statewide_pct_hi = sum(hi) / sum(eligible_voters) * 100,
             statewide_hi = sum(hi))
 
 write_csv(predicted, "../data/processed/2026_predicted_turnout.csv")

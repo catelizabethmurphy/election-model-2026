@@ -289,7 +289,6 @@ polling_places_2026 <- read_csv("../data/polling_places/2026_polling_places.csv"
 ## COMBINE
 ```{r}
 polling_places <- bind_rows(polling_places_2010, polling_places_2014, polling_places_2018, polling_places_2022, polling_places_2026) |>
-  left_join(md_area, by = "county") |>
   select(year, county, polling_places_per_precinct) 
 
 remove(polling_places_2010, polling_places_2014, polling_places_2018, polling_places_2022, polling_places_2026)
@@ -323,30 +322,47 @@ candidates <- list(
   early = pct_turnout ~ pct_early,
   black = pct_turnout ~ pct_black,
   income = pct_turnout ~ median_household_income,
+  black_income = pct_turnout ~ pct_black + median_household_income,
+  base_black_income = pct_turnout ~ prior_midterm_turnout + pct_black + median_household_income,
   early_black = pct_turnout ~ pct_early + pct_black,
   base_early_black = pct_turnout ~ prior_midterm_turnout + pct_early + pct_black,
   early_black_income = pct_turnout ~ pct_early + pct_black + median_household_income,
   base_early_black_income = pct_turnout ~ prior_midterm_turnout + pct_early + pct_black + median_household_income
 )
   
-  
-backtest <- function(f, hold = "2014") {
+backtest <- function(f, hold = "2022") {
   fit  <- glm(f, family = quasibinomial, weights = eligible_voters,
               data = filter(model_data, year != hold))
   test <- filter(model_data, year == hold)
-  mean(abs(predict(fit, test, type = "response") - test$pct_turnout)) * 100
+  err  <- predict(fit, test, type = "response") - test$pct_turnout
+  tibble(year = hold,
+         mae  = mean(abs(err), na.rm = TRUE) * 100,
+         wmae = weighted.mean(abs(err), test$eligible_voters, na.rm = TRUE) * 100)
 }
 
 map_dbl(candidates, backtest) 
 
-finalists <- candidates[c("base", "base_early", "base_black", "base_primary", "base_early_black", "base_early_primary", "base_black_primary", "base_early_black_primary")]
-
 holdouts <- c("2014", "2018", "2022")
 map_dbl(candidates, \(f) mean(map_dbl(holdouts, \(h) backtest(f, h)))) |> sort()
+
+backtest <- function(f, hold) {
+  fit  <- glm(f, family = quasibinomial, weights = eligible_voters,
+              data = filter(model_data, year < hold))
+  test <- filter(model_data, year == hold)
+  err  <- predict(fit, test, type = "response") - test$pct_turnout
+  tibble(year = hold,
+         mae  = mean(abs(err), na.rm = TRUE) * 100,
+         wmae = weighted.mean(abs(err), test$eligible_voters, na.rm = TRUE) * 100)
+}
+
+f <- pct_turnout ~ pct_black + pct_early + median_household_income
+map_dfr(c(2014, 2018, 2022), ~ backtest(f, .x))
 ```
 
 ```{r}
 f <- candidates$early_black_income
+
+f <- candidates$base_early_black_income
 
 map(holdouts, \(h) {
   fit  <- glm(f, family = quasibinomial, weights = eligible_voters, # your weight column
