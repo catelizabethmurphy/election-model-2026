@@ -1,0 +1,132 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(janitor)
+library(readxl)
+library(lubridate)
+library(corrplot)
+library(tigris)
+options(tigris_use_cache = TRUE)
+```
+
+# DATA
+## HISTORICAL
+### TURNOUT
+```{r}
+historical_turnout <- read_csv("../data/processed/historical_midterm_turnout.csv")
+```
+### DEMOGRAPHICS
+```{r}
+historical_demographics <- read_csv("../data/processed/historical_demographics.csv")
+```
+
+
+
+### COMBINE
+```{r}
+historical_data <- historical_turnout |>
+  left_join(historical_demographics, join_by(year, county)) |>
+  filter(party == "ALL")
+
+remove(historical_turnout, historical_demographics)
+```
+
+## 2026
+### ELIGIBLE
+```{r}
+eligible_voters_2026 <- read_csv("../data/processed/2026_eligible_voters.csv")
+```
+
+### EARLY
+```{r}
+early_voting_2026 <- read_csv("../data/processed/2026_early_voting.csv")
+```
+
+### DEMOGRAPHICS
+```{r}
+demographics_2026 <- read_csv("../data/processed/2026_demographics.csv")
+```
+
+### COMBINE
+```{r}
+data_2026 <- eligible_voters_2026 |>
+  left_join(early_voting_2026, join_by(year, county, eligible_voters)) |>
+  left_join(demographics_2026, join_by(year, county)) |>
+  filter(party == "ALL")
+
+remove(eligible_voters_2026, early_voting_2026, demographics_2026)
+```
+
+
+# REVISED MODEL
+
+```{r}
+final_fit <- glm(
+  cbind(turnout, eligible_voters - turnout) ~ pct_black + pct_early + median_household_income,
+  family = quasibinomial, 
+  data = historical_data
+)
+summary(final_fit)
+```
+
+
+```{r}
+f <- cbind(turnout, eligible_voters - turnout) ~ pct_black + pct_early + median_household_income
+
+years <- c("2010", "2014", "2018", "2022")
+
+backtest <- map(years, \(h) {
+  fit <- glm(f, family = quasibinomial, 
+             data = filter(historical_data, year != h))
+  filter(historical_data, year == h) |>
+    mutate(predicted = predict(fit, pick(everything()), type = "response"))
+}) |>
+  list_rbind() |>
+  select(year, county, pct_turnout, predicted) |>
+  mutate(resid = pct_turnout - predicted)
+
+# County spread, shrunk toward the pooled spread.
+# k = how many "pseudo-elections" of weight the statewide SD gets.
+pooled_sd <- sd(backtest$resid)
+k <- 4
+
+county_scale <- backtest |>
+  group_by(county) |>
+  summarise(n_yrs = n(),
+            bias  = mean(resid),
+            sd_c  = sd(resid)) |>
+  mutate(scale = sqrt((k * pooled_sd^2 + (n_yrs - 1) * sd_c^2) /
+                      (k + n_yrs - 1)))
+
+# Standardize, take one pair of quantiles, rescale per county
+backtest <- backtest |>
+  left_join(county_scale, by = "county") |>
+  mutate(z = resid / scale)
+
+qz <- quantile(backtest$z, c(0.05, 0.95))
+
+# Check coverage on the backtest (should be near 90%)
+backtest |>
+  mutate(lo = predicted + qz[1] * scale,
+         hi = predicted + qz[2] * scale) |>
+  summarise(coverage = mean(pct_turnout >= lo & pct_turnout <= hi))
+
+# Apply to the forecast (fit on all years)
+final_fit <- glm(f, family = quasibinomial, data = historical_data)
+
+revised_forecast <- data_2026 |>
+  mutate(predicted = predict(final_fit, pick(everything()), type = "response")) |>
+  left_join(county_scale, by = "county") |>
+  mutate(lo = predicted + qz[1] * scale,
+         hi = predicted + qz[2] * scale)
+```
+

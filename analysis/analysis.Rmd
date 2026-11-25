@@ -78,12 +78,10 @@ turnout <- map_dfr(turnout_files, ~ read_excel(paste0("../data/turnout/", .x), c
 
 ```{r}
 general <- turnout |>
-  filter(election == "GENERAL", county != "TOTAL") |>
+  filter(election == "GENERAL", county != "TOTAL", party == "ALL") |>
   mutate(pct_turnout = as.numeric(pct_turnout)) |>
-  arrange(county, year) |>
-  group_by(county) |>
-  mutate(prior_midterm_turnout = lag(pct_turnout)) |>
-  ungroup()
+  select(year, county, turnout) |>
+  pivot_wider(names_from = year, values_from = turnout)
 
 primary_statewide_turnout <- turnout |>
   filter(election == "PRIMARY", party == "ALL", county != "TOTAL") 
@@ -334,29 +332,13 @@ backtest <- function(f, hold = "2022") {
   fit  <- glm(f, family = quasibinomial, weights = eligible_voters,
               data = filter(model_data, year != hold))
   test <- filter(model_data, year == hold)
-  err  <- predict(fit, test, type = "response") - test$pct_turnout
-  tibble(year = hold,
-         mae  = mean(abs(err), na.rm = TRUE) * 100,
-         wmae = weighted.mean(abs(err), test$eligible_voters, na.rm = TRUE) * 100)
+  mean(abs(predict(fit, test, type = "response") - test$pct_turnout)) * 100
 }
 
 map_dbl(candidates, backtest) 
 
 holdouts <- c("2014", "2018", "2022")
 map_dbl(candidates, \(f) mean(map_dbl(holdouts, \(h) backtest(f, h)))) |> sort()
-
-backtest <- function(f, hold) {
-  fit  <- glm(f, family = quasibinomial, weights = eligible_voters,
-              data = filter(model_data, year < hold))
-  test <- filter(model_data, year == hold)
-  err  <- predict(fit, test, type = "response") - test$pct_turnout
-  tibble(year = hold,
-         mae  = mean(abs(err), na.rm = TRUE) * 100,
-         wmae = weighted.mean(abs(err), test$eligible_voters, na.rm = TRUE) * 100)
-}
-
-f <- pct_turnout ~ pct_black + pct_early + median_household_income
-map_dfr(c(2014, 2018, 2022), ~ backtest(f, .x))
 ```
 
 ```{r}
