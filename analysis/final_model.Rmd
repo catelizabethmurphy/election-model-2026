@@ -111,7 +111,7 @@ predicted <- predicted |>
          lo = lo_pct * eligible_voters,
          hi = hi_pct * eligible_voters) |>
   select(year, county, eligible_voters, predicted_turnout, predicted_pct_turnout, lo, lo_pct, hi, hi_pct, prior_midterm_pct_turnout) |>
-  mutate(across(c(predicted_pct_turnout, lo_pct, hi_pct, prior_midterm_pct_turnout), ~ round(.x * 100, 1)),
+  mutate(across(c(predicted_pct_turnout, lo_pct, hi_pct, prior_midterm_pct_turnout), ~ round(.x * 100, 2)),
          across(c(predicted_turnout, lo, hi), ~ round(.x, 0)))
 
 predicted |>

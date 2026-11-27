@@ -15,15 +15,8 @@ options(tigris_use_cache = TRUE)
 ```
 
 ```{r}
-partial_results_2026 <- read_csv("../data/2026/results/md_county_results_all.csv")
-
-actual_2026 <- partial_results_2026 |>
-  filter(contest == "Governor / Lt. Governor") |>
-  select(county, contest, candidate, party, total) |>
-  group_by(county) |>
-  summarise(total_votes_cast = sum(total)) |>
-  left_join(read_csv("../data/processed/2026_eligible_voters.csv") |> filter(party == "ALL") |> select(county, eligible_voters), join_by(county)) |>
-  mutate(pct_turnout = round(total_votes_cast / eligible_voters * 100, 1))
+unofficial_results_2026 <- read_csv("../data/2026/results/2026_general_unofficial_turnout.csv") |>
+  select(county, votes_cast, eligible_voters, pct_turnout)
 
 predicted_2026 <- read_csv("../data/processed/2026_predicted_turnout.csv")
 
@@ -32,13 +25,13 @@ historical <- read_csv("../data/processed/historical_midterm_turnout.csv") |>
   select(year, county, turnout, pct_turnout) |>
   pivot_wider(names_from = year, values_from = c(turnout, pct_turnout)) |>
   left_join(predicted_2026 |> select(county, predicted_turnout, predicted_pct_turnout), join_by(county)) |>
-  left_join(actual_2026, join_by(county)) |>
+  left_join(unofficial_results_2026, join_by(county)) |>
   rename(
     predicted_turnout_2026 = predicted_turnout,
     predicted_pct_turnout_2026 = predicted_pct_turnout,
-    turnout_2026 = total_votes_cast
+    turnout_2026 = votes_cast
   ) |>
-  mutate(across(c(pct_turnout_2010, pct_turnout_2014, pct_turnout_2018, pct_turnout_2022), ~ round(.x * 100, 1))) |>
+  mutate(across(c(pct_turnout_2010, pct_turnout_2014, pct_turnout_2018, pct_turnout_2022), ~ round(.x * 100, 2))) |>
   select(county, pct_turnout_2010, pct_turnout_2014, pct_turnout_2018, pct_turnout_2022, pct_turnout, predicted_pct_turnout_2026) |>
   mutate(diff_from_predicted = pct_turnout - predicted_pct_turnout_2026,
          diff_from_2010 = pct_turnout - pct_turnout_2010,
@@ -58,42 +51,44 @@ historical <- read_csv("../data/processed/historical_midterm_turnout.csv") |>
           closest_year == 2022 ~ diff_from_2022,
           TRUE ~ NA_real_)
          )
+
+write_csv(historical, "../data/processed/historical_turnout_comparison.csv")
          
 ```
 
 ```{r}
-comparison <- actual_2026 |>
+comparison <- unofficial_results_2026 |>
   left_join(predicted_2026 |> select(county, predicted_turnout, predicted_pct_turnout, lo, hi), join_by(county)) |>
-  select(county, eligible_voters, total_votes_cast, predicted_turnout, predicted_pct_turnout, pct_turnout, lo, hi) |>
+  select(county, eligible_voters, votes_cast, predicted_turnout, predicted_pct_turnout, pct_turnout, lo, hi) |>
   mutate(
-    difference = total_votes_cast - predicted_turnout,
-    difference_from_lo = total_votes_cast - lo,
-    within_interval = if_else(total_votes_cast >= lo & total_votes_cast <= hi, TRUE, FALSE),
-    pct_difference = (total_votes_cast - predicted_turnout) / predicted_turnout * 100,
+    difference = votes_cast - predicted_turnout,
+    difference_from_lo = votes_cast - lo,
+    within_interval = if_else(votes_cast >= lo & votes_cast <= hi, TRUE, FALSE),
+    pct_difference = (votes_cast - predicted_turnout) / predicted_turnout * 100,
     closer_to_lo = if_else(abs(difference_from_lo) < abs(difference), TRUE, FALSE),
     eligible_voters_rank = rank(-eligible_voters, ties.method = "min")
   ) 
 
 comparison |>
   summarise(
-    total_votes_cast = sum(total_votes_cast),
+    votes_cast = sum(votes_cast),
     predicted_turnout = sum(predicted_turnout),
     
   ) |>
   mutate(
-    difference = total_votes_cast - predicted_turnout,
-    pct_difference = (total_votes_cast - predicted_turnout) / predicted_turnout * 100
+    difference = votes_cast - predicted_turnout,
+    pct_difference = (votes_cast - predicted_turnout) / predicted_turnout * 100
   )
 
 comparison |>
-  summarise(statewide_pct_turnout = sum(total_votes_cast) / sum(eligible_voters) * 100,
+  summarise(statewide_pct_turnout = sum(votes_cast) / sum(eligible_voters) * 100,
             statewide_predicted_pct_turnout = sum(predicted_turnout) / sum(eligible_voters) * 100,
             statewide_lo_turnout = sum(lo),
             statewide_lo_pct_turnout = sum(lo) / sum(eligible_voters) * 100,
             avg_predicted_pct_turnout = mean(predicted_pct_turnout),
             avg_actual_pct_turnout = mean(pct_turnout),
             statewide_predicted_turnout = sum(predicted_turnout),
-            statewide_actual_turnout = sum(total_votes_cast),
+            statewide_actual_turnout = sum(votes_cast),
             miss = statewide_actual_turnout - statewide_predicted_turnout,
             pct_miss = miss / statewide_predicted_turnout * 100,
             miss_from_lo = statewide_actual_turnout - statewide_lo_turnout,
@@ -108,12 +103,11 @@ predicted_2026 |>
     statewide_hi_turnout = sum(hi),
     statewide_hi_pct_turnout = sum(hi) / sum(eligible_voters) * 100
   )
-  
 
-actual_2026 |>
+unofficial_results_2026 |>
   summarise(
-    statewide_actual_turnout = sum(total_votes_cast),
-    statewide_actual_pct_turnout = sum(total_votes_cast) / sum(eligible_voters) * 100
+    statewide_actual_turnout = sum(votes_cast),
+    statewide_actual_pct_turnout = sum(votes_cast) / sum(eligible_voters) * 100
   )
 ```
 
@@ -127,14 +121,14 @@ skipjack_forecast <- read_csv("../data/processed/2026_skipjack_forecast.csv") |>
     lo = ballots_q05,
     hi = ballots_q95)
 
-skipjack_comparison <- actual_2026 |>
+skipjack_comparison <- unofficial_results_2026 |>
   left_join(skipjack_forecast, join_by(county)) |>
-  select(county, total_votes_cast, predicted_turnout, lo, hi) |>
+  select(county, votes_cast, predicted_turnout, lo, hi) |>
   mutate(
-    difference = total_votes_cast - predicted_turnout,
-    difference_from_lo = total_votes_cast - lo,
-    within_interval = if_else(total_votes_cast >= lo & total_votes_cast <= hi, TRUE, FALSE),
-    pct_difference = (total_votes_cast - predicted_turnout) / predicted_turnout * 100
+    difference = votes_cast - predicted_turnout,
+    difference_from_lo = votes_cast - lo,
+    within_interval = if_else(votes_cast >= lo & votes_cast <= hi, TRUE, FALSE),
+    pct_difference = (votes_cast - predicted_turnout) / predicted_turnout * 100
   )
 ```
 
